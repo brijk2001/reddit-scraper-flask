@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reddit Scraper - Flask + Bootstrap</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px 0;
+      }
+      .main-card {
+        background: white;
+        border-radius: 15px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+      }
+      .reddit-icon {
+        font-size: 3rem;
+        color: #ff4500;
+      }
+      .preview-box {
+        background: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        max-height: 400px;
+        overflow-y: auto;
+        font-family: "Courier New", monospace;
+        font-size: 0.85rem;
+      }
+      .footer-text {
+        color: white;
+        text-align: center;
+        margin-top: 30px;
+        font-size: 0.9rem;
+      }
+      .spinner-border-custom {
+        width: 3rem;
+        height: 3rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="row justify-content-center">
+        <div class="col-lg-8 col-md-10">
+          <div class="main-card p-5">
+            <!-- Header -->
+            <div class="text-center mb-4">
+              <div class="reddit-icon mb-3">🤖</div>
+              <h1 class="mb-2">Reddit Scraper</h1>
+              <p class="text-muted">
+                Extract posts and comments from any subreddit
+              </p>
+            </div>
+
+            <!-- Scrape Form -->
+            <form id="scrapeForm">
+              <div class="mb-3">
+                <label for="subreddit" class="form-label">Subreddit Name</label>
+                <input
+                  type="text"
+                  class="form-control"
+                  id="subreddit"
+                  name="subreddit"
+                  placeholder="e.g., python, technology, news"
+                  required
+                />
+                <small class="form-text text-muted"
+                  >Enter without "r/" prefix</small
+                >
+              </div>
+
+              <div class="row">
+                <div class="col-12 mb-3">
+                  <label for="days" class="form-label">Timeframe (Days)</label>
+                  <input
+                    type="number"
+                    class="form-control"
+                    id="days"
+                    name="days"
+                    value="7"
+                    min="1"
+                    max="365"
+                    required
+                  />
+                  <small class="form-text text-muted"
+                    >Scrape all posts from the last X days (no limit)</small
+                  >
+                </div>
+              </div>
+
+              <div class="d-grid gap-2 mb-3">
+                <button
+                  type="submit"
+                  class="btn btn-primary btn-lg"
+                  id="scrapeBtn"
+                >
+                  <span id="btnText">🚀 Start Scraping</span>
+                  <span id="btnSpinner" class="d-none">
+                    <span
+                      class="spinner-border spinner-border-sm me-2"
+                      role="status"
+                    ></span>
+                    Scraping...
+                  </span>
+                </button>
+              </div>
+            </form>
+
+            <!-- Loading Indicator -->
+            <div id="loadingIndicator" class="text-center my-4 d-none">
+              <div
+                class="spinner-border spinner-border-custom text-primary"
+                role="status"
+              >
+                <span class="visually-hidden">Loading...</span>
+              </div>
+              <p class="mt-3 text-muted">
+                Fetching posts and comments... This may take a moment.
+              </p>
+            </div>
+
+            <!-- Success Message -->
+            <div
+              id="successMessage"
+              class="alert alert-success d-none"
+              role="alert"
+            >
+              <h5 class="alert-heading">✅ Scraping Complete!</h5>
+              <p class="mb-0">
+                Your CSV file has been downloaded. Check your Downloads folder.
+              </p>
+              <hr />
+              <p class="mb-0 small" id="statsMessage"></p>
+            </div>
+
+            <!-- Error Message -->
+            <div
+              id="errorMessage"
+              class="alert alert-danger d-none"
+              role="alert"
+            >
+              <h5 class="alert-heading">❌ Error</h5>
+              <p class="mb-0" id="errorText"></p>
+            </div>
+
+            <!-- Preview Card -->
+            <div id="previewCard" class="card mt-4 d-none">
+              <div class="card-header">
+                <h5 class="mb-0">📄 CSV Preview (First 5000 characters)</h5>
+              </div>
+              <div class="card-body">
+                <pre class="preview-box p-3 mb-0" id="previewContent"></pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- Footer -->
+          <div class="footer-text">
+            <p>Built with Flask + Bootstrap 5 + Reddit API (PRAW)</p>
+            <p class="small">
+              Open source • Perfect for data analysis • Beginner-friendly
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+      const form = document.getElementById("scrapeForm");
+      const scrapeBtn = document.getElementById("scrapeBtn");
+      const btnText = document.getElementById("btnText");
+      const btnSpinner = document.getElementById("btnSpinner");
+      const loadingIndicator = document.getElementById("loadingIndicator");
+      const successMessage = document.getElementById("successMessage");
+      const errorMessage = document.getElementById("errorMessage");
+      const previewCard = document.getElementById("previewCard");
+      const previewContent = document.getElementById("previewContent");
+      const errorText = document.getElementById("errorText");
+      const statsMessage = document.getElementById("statsMessage");
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+
+        // Reset UI
+        successMessage.classList.add("d-none");
+        errorMessage.classList.add("d-none");
+        previewCard.classList.add("d-none");
+        loadingIndicator.classList.remove("d-none");
+
+        // Disable button
+        scrapeBtn.disabled = true;
+        btnText.classList.add("d-none");
+        btnSpinner.classList.remove("d-none");
+
+        // Prepare form data
+        const formData = new FormData(form);
+
+        try {
+          const response = await fetch("/scrape", {
+            method: "POST",
+            body: formData,
+          });
+
+          const data = await response.json();
+
+          if (response.ok && data.success) {
+            // Download CSV
+            const blob = new Blob([data.csv_data], { type: "text/csv" });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = data.filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+
+            // Show success message
+            successMessage.classList.remove("d-none");
+            statsMessage.textContent = `Successfully scraped ${
+              data.posts_count
+            } posts from r/${formData.get("subreddit")}`;
+
+            // Show preview
+            previewContent.textContent = data.preview;
+            previewCard.classList.remove("d-none");
+          } else {
+            // Show error
+            errorText.textContent = data.error || "An unknown error occurred";
+            errorMessage.classList.remove("d-none");
+          }
+        } catch (error) {
+          errorText.textContent = `Network error: ${error.message}`;
+          errorMessage.classList.remove("d-none");
+        } finally {
+          // Re-enable button
+          loadingIndicator.classList.add("d-none");
+          scrapeBtn.disabled = false;
+          btnText.classList.remove("d-none");
+          btnSpinner.classList.add("d-none");
+        }
+      });
+    </script>
+  </body>
+</html>
