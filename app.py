@@ -10,24 +10,16 @@ from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, render_template, request, jsonify, send_file, abort, url_for
 from dotenv import load_dotenv
 import praw
+from datetime import timezone
+
 
 load_dotenv()
-
 app = Flask(__name__)
 
-# ---------------------------
-# Job registry (in-memory)
-# ---------------------------
-# JOBS[job_id] = {
-#   "state": "queued|running|done|error|cancelled",
-#   "progress": 0..100,
-#   "message": str,
-#   "filename": "/tmp/....csv" or None,
-#   "created_at": timestamp
-# }
+# Background job storage (in-memory)
 JOBS = {}
 JOBS_LOCK = threading.Lock()
-EXECUTOR = ThreadPoolExecutor(max_workers=2)  # tweak if needed
+EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
 
 def make_reddit():
@@ -61,84 +53,77 @@ def csv_escape(text):
     return str(text).replace("\r", " ").replace("\n", " ")
 
 
-def run_scrape_job(job_id, subreddit, days, limit):
-    """Background thread target that does the scraping and writes CSV to /tmp."""
-    safe_set(job_id, state="running", progress=0, message="Starting…")
+def run_scrape_job(job_id, subreddit, days):
+    """Runs the scraping task in a background thread."""
+    safe_set(job_id, state="running", progress=0, message="Starting scrape...")
 
     try:
         reddit = make_reddit()
         sub = reddit.subreddit(subreddit)
+        min_ts = int((datetime.now(timezone.utc) - timedelta(days=int(days))).timestamp())
 
-        # sanitize + timeframe
-        limit = max(1, min(int(limit), 500))
-        min_ts = int((datetime.utcnow() - timedelta(days=int(days))).timestamp())
+        # out_path = f"/tmp/{subreddit}_{days}d_{int(time.time())}_{job_id}.csv"
+        import tempfile
+        tmp_dir = tempfile.gettempdir()
+        out_path = os.path.join(tmp_dir, f"{subreddit}_{days}d_{int(time.time())}_{job_id}.csv")
 
-        # Pre-scan to know total (for nicer progress)
-        submissions = list(sub.new(limit=limit))
-        # Filter by timeframe
-        submissions = [s for s in submissions if int(s.created_utc) >= min_ts]
-        total = max(len(submissions), 1)
-
-        # prepare CSV file path
-        out_path = f"/tmp/{subreddit}_{days}d_{int(time.time())}_{job_id}.csv"
         f = open(out_path, "w", newline="", encoding="utf-8")
-        writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+        writer = csv.writer(f)
+        writer.writerow([
+            "post_id", "post_title", "post_selftext", "post_author", "post_score", "post_created_utc",
+            "comment_id", "comment_parent_id", "comment_body", "comment_author", "comment_score", "comment_created_utc"
+        ])
 
-        header = [
-            "post_id","post_title","post_selftext","post_author","post_score","post_created_utc",
-            "comment_id","comment_parent_id","comment_body","comment_author","comment_score","comment_created_utc"
-        ]
-        writer.writerow(header)
+        count = 0
+        for submission in sub.new(limit=None):
+            if int(submission.created_utc) < min_ts:
+                break  # stop once we hit older posts
 
-        for idx, submission in enumerate(submissions, start=1):
-            # top-level comments only
             submission.comment_sort = "confidence"
             submission.comments.replace_more(limit=0)
-            top_level = submission.comments  # Listing of top-level Comment objects
+            top_comments = submission.comments
 
-            if len(top_level) == 0:
+            if len(top_comments) == 0:
                 writer.writerow([
                     submission.id,
-                    csv_escape(getattr(submission, "title", "")),
-                    csv_escape(getattr(submission, "selftext", "")),
+                    csv_escape(submission.title),
+                    csv_escape(submission.selftext),
                     getattr(getattr(submission, "author", None), "name", ""),
-                    getattr(submission, "score", ""),
-                    datetime.utcfromtimestamp(getattr(submission, "created_utc", int(time.time()))).isoformat(),
+                    submission.score,
+                    datetime.utcfromtimestamp(submission.created_utc).isoformat(),
                     "", "", "", "", "", ""
                 ])
             else:
-                for c in top_level:
+                for c in top_comments:
                     if not hasattr(c, "id"):
                         continue
                     writer.writerow([
                         submission.id,
-                        csv_escape(getattr(submission, "title", "")),
-                        csv_escape(getattr(submission, "selftext", "")),
+                        csv_escape(submission.title),
+                        csv_escape(submission.selftext),
                         getattr(getattr(submission, "author", None), "name", ""),
-                        getattr(submission, "score", ""),
-                        datetime.utcfromtimestamp(getattr(submission, "created_utc", int(time.time()))).isoformat(),
+                        submission.score,
+                        datetime.utcfromtimestamp(submission.created_utc).isoformat(),
                         c.id,
                         getattr(c, "parent_id", ""),
                         csv_escape(getattr(c, "body", "")),
                         getattr(getattr(c, "author", None), "name", ""),
                         getattr(c, "score", ""),
-                        datetime.utcfromtimestamp(getattr(c, "created_utc", int(time.time()))).isoformat()
+                        datetime.utcfromtimestamp(getattr(c, "created_utc", submission.created_utc)).isoformat()
                     ])
 
-            # progress + polite delay
-            prog = int((idx / total) * 100)
-            safe_set(job_id, progress=prog, message=f"Processed {idx}/{total} posts…")
-            if idx % 10 == 0:
-                time.sleep(0.5)
+            count += 1
+            if count % 10 == 0:
+                safe_set(job_id, progress=min(100, count % 100), message=f"Scraped {count} posts...")
+                time.sleep(0.3)
             else:
                 time.sleep(0.1)
 
-        f.flush()
         f.close()
-        safe_set(job_id, state="done", progress=100, message="Finished", filename=out_path)
+        safe_set(job_id, state="done", progress=100, message=f"Completed {count} posts", filename=out_path)
 
     except Exception as e:
-        safe_set(job_id, state="error", message=f"Failed: {e}")
+        safe_set(job_id, state="error", message=f"Error: {e}")
 
 
 @app.route("/")
@@ -148,11 +133,10 @@ def index():
 
 @app.post("/start-job")
 def start_job():
-    """Start a background scrape job and return job_id immediately."""
+    """Start background scraping job"""
     try:
         subreddit = (request.form.get("subreddit") or "").strip()
         days = int(request.form.get("days") or 7)
-        limit = int(request.form.get("limit") or 100)
         if not subreddit:
             return abort(400, "Subreddit is required.")
     except Exception:
@@ -168,8 +152,7 @@ def start_job():
             "created_at": time.time(),
         }
 
-    # submit to executor
-    EXECUTOR.submit(run_scrape_job, job_id, subreddit, days, limit)
+    EXECUTOR.submit(run_scrape_job, job_id, subreddit, days)
     return jsonify({"job_id": job_id})
 
 
@@ -199,19 +182,16 @@ def download_job(job_id):
 
     path = job["filename"]
     if not os.path.exists(path):
-        return abort(404, "File missing (expired?)")
+        return abort(404, "File missing (expired)")
 
-    # Use original filename
-    download_name = os.path.basename(path)
     return send_file(
         path,
         mimetype="text/csv; charset=utf-8",
         as_attachment=True,
-        download_name=download_name
+        download_name=os.path.basename(path)
     )
 
 
-# Optional: simple cleanup of old jobs in memory (/tmp files)
 def cleanup_old_jobs(max_age_seconds=3600):
     now = time.time()
     with JOBS_LOCK:
@@ -228,14 +208,12 @@ def cleanup_old_jobs(max_age_seconds=3600):
 
 @app.after_request
 def after_request(resp):
-    # opportunistic cleanup every response
     try:
-        cleanup_old_jobs(3600)  # 1 hour retention
+        cleanup_old_jobs(3600)
     except Exception:
         pass
     return resp
 
 
 if __name__ == "__main__":
-    # Local dev
     app.run(host="0.0.0.0", port=5000, debug=True)
