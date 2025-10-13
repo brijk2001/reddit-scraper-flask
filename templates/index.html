@@ -1,93 +1,444 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="light">
   <head>
     <meta charset="utf-8" />
-    <title>Reddit Scraper — Background Jobs</title>
+    <title>Reddit Scraper</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#6c5ce7" />
+    <!-- Bootstrap 5 -->
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
       rel="stylesheet"
     />
+    <!-- Inter font -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <!-- Favicon (inline SVG) -->
+    <link
+      rel="icon"
+      href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 128 128"><rect width="128" height="128" rx="24" fill="%236c5ce7"/><g fill="%23fff"><circle cx="48" cy="54" r="20"/><rect x="62" y="72" width="28" height="10" rx="5"/><circle cx="84" cy="92" r="16" fill="%23fff"/><rect x="92" y="100" width="20" height="8" rx="4" fill="%23fff"/></g><text x="48" y="60" font-size="16" text-anchor="middle" fill="%236c5ce7" font-family="Inter,Arial">r/</text></svg>'
+    />
+
+    <style>
+      :root {
+        --brand: #6c5ce7;
+        --brand-2: #a66cff;
+        --glass-bg: rgba(255, 255, 255, 0.12);
+        --glass-stroke: rgba(255, 255, 255, 0.35);
+        --shadow: 0 12px 40px rgba(20, 20, 40, 0.14);
+        --text-muted: #7a8499;
+      }
+      [data-bs-theme="dark"] {
+        --glass-bg: rgba(20, 20, 28, 0.35);
+        --glass-stroke: rgba(255, 255, 255, 0.1);
+        --text-muted: #9aa6bd;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial,
+          sans-serif;
+        overflow-x: hidden;
+        background: radial-gradient(
+            120% 100% at 10% -10%,
+            #eaeaff 0%,
+            transparent 60%
+          ),
+          radial-gradient(110% 90% at 110% 0%, #f4e9ff 0%, transparent 55%),
+          linear-gradient(180deg, #f7f8fc 0%, #eef1fb 60%, #e9ecf7 100%);
+      }
+      [data-bs-theme="dark"] body {
+        background: radial-gradient(
+            120% 100% at 10% -10%,
+            #1e2030 0%,
+            transparent 60%
+          ),
+          radial-gradient(110% 90% at 110% 0%, #1b1d2b 0%, transparent 55%),
+          linear-gradient(180deg, #0f111a 0%, #141826 60%, #121422 100%);
+      }
+
+      /* Parallax layers */
+      .parallax {
+        position: fixed;
+        inset: -10vh 0 0 0;
+        pointer-events: none;
+        z-index: -1;
+      }
+      .p-layer {
+        position: absolute;
+        border-radius: 999px;
+        filter: blur(20px);
+        opacity: 0.55;
+        will-change: transform;
+      }
+      .p1 {
+        width: 42vmin;
+        height: 42vmin;
+        left: 6vw;
+        top: 8vh;
+        background: linear-gradient(135deg, #c9c2ff, #e8e3ff);
+      }
+      .p2 {
+        width: 56vmin;
+        height: 56vmin;
+        right: -8vw;
+        top: 2vh;
+        background: linear-gradient(135deg, #f6d9ff, #e9f0ff);
+      }
+      .p3 {
+        width: 36vmin;
+        height: 36vmin;
+        left: 55vw;
+        top: 45vh;
+        background: linear-gradient(135deg, #b7f0ff, #e9f5ff);
+      }
+
+      /* Glass cards */
+      .glass {
+        background: var(--glass-bg);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid var(--glass-stroke);
+        border-radius: 18px;
+        box-shadow: var(--shadow);
+      }
+
+      .brand-btn.btn {
+        --bs-btn-bg: var(--brand);
+        --bs-btn-border-color: var(--brand);
+        --bs-btn-hover-bg: #5a4be1;
+        --bs-btn-hover-border-color: #5a4be1;
+        --bs-btn-active-bg: #4e40d6;
+        --bs-btn-active-border-color: #4e40d6;
+      }
+      .progress {
+        height: 10px;
+        background: rgba(120, 120, 160, 0.15);
+      }
+      .progress-bar {
+        background: linear-gradient(90deg, var(--brand), var(--brand-2));
+      }
+
+      /* Header */
+      .app-header {
+        padding-block: 20px;
+      }
+      .logo-wrap {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+      .wordmark {
+        font-weight: 700;
+        letter-spacing: 0.2px;
+      }
+
+      /* Footer */
+      .app-footer {
+        color: var(--text-muted);
+      }
+
+      /* Code box */
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin: 0;
+      }
+
+      /* Mobile tweaks */
+      @media (max-width: 575.98px) {
+        .wordmark {
+          font-size: 1.1rem;
+        }
+      }
+    </style>
   </head>
-  <body class="bg-light">
-    <div class="container py-4" style="max-width: 840px">
-      <h2 class="mb-3">Reddit Scraper — Background Jobs</h2>
-      <p class="text-secondary">
-        Scrape all posts and comments from a subreddit within a timeframe.
-      </p>
 
-      <form id="startForm" class="row gy-3 gx-3">
-        <div class="col-12 col-md-7">
-          <label class="form-label">Subreddit Name</label>
-          <input
-            class="form-control"
-            name="subreddit"
-            placeholder="e.g. IndiaCoffee"
-            required
-          />
-        </div>
-        <div class="col-6 col-md-3">
-          <label class="form-label">Timeframe (Days)</label>
-          <input
-            type="number"
-            class="form-control"
-            name="days"
-            value="7"
-            min="1"
-            max="365"
-          />
-        </div>
-        <div class="col-6 col-md-2 d-flex align-items-end">
-          <button class="btn btn-primary w-100" type="submit" id="goBtn">
-            Start
-          </button>
-        </div>
-      </form>
-
-      <div id="jobPanel" class="mt-4 d-none">
-        <div class="alert alert-info py-2" id="jobMsg">Starting...</div>
-        <div class="progress mb-2">
-          <div
-            id="bar"
-            class="progress-bar progress-bar-striped progress-bar-animated"
-            style="width: 0%"
-          ></div>
-        </div>
-        <a id="downloadBtn" class="btn btn-success disabled" href="#" download
-          >Download CSV</a
-        >
-      </div>
-
-      <div class="card mt-4">
-        <div class="card-header">Status</div>
-        <div class="card-body">
-          <pre id="preview" class="text-secondary">No job yet.</pre>
-        </div>
-      </div>
-
-      <footer class="mt-4 text-center text-secondary small">
-        Built with Flask + Bootstrap 5 + Reddit API (PRAW)
-      </footer>
+  <body>
+    <!-- PARALLAX BACKDROP -->
+    <div class="parallax" aria-hidden="true">
+      <div class="p-layer p1" data-speed="0.15"></div>
+      <div class="p-layer p2" data-speed="0.08"></div>
+      <div class="p-layer p3" data-speed="0.2"></div>
     </div>
 
+    <!-- HEADER -->
+    <header class="container app-header">
+      <div class="d-flex justify-content-between align-items-center">
+        <div class="logo-wrap">
+          <!-- Inline “reddit scraper” logo (generic, not official Reddit mark) -->
+          <svg width="36" height="36" viewBox="0 0 64 64" aria-hidden="true">
+            <defs>
+              <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#6c5ce7" />
+                <stop offset="1" stop-color="#a66cff" />
+              </linearGradient>
+            </defs>
+            <!-- Chat bubble -->
+            <path
+              d="M10 18a14 14 0 0 1 14-14h16a14 14 0 0 1 14 14v6a14 14 0 0 1-14 14H29l-8 8v-8H24A14 14 0 0 1 10 24z"
+              fill="url(#g)"
+              opacity=".95"
+            />
+            <!-- r/ label -->
+            <text
+              x="28"
+              y="24"
+              font-size="12"
+              text-anchor="middle"
+              fill="#fff"
+              font-family="Inter,Arial"
+              font-weight="700"
+            >
+              r/
+            </text>
+            <!-- Magnifying glass -->
+            <circle cx="44" cy="40" r="10" fill="#fff" opacity=".95" />
+            <circle
+              cx="44"
+              cy="40"
+              r="6.3"
+              fill="none"
+              stroke="#6c5ce7"
+              stroke-width="3"
+            />
+            <rect
+              x="51"
+              y="46"
+              width="12"
+              height="4.5"
+              rx="2.2"
+              fill="#6c5ce7"
+              transform="rotate(35 51 46)"
+            />
+          </svg>
+          <div class="wordmark fs-4">Reddit Scraper</div>
+        </div>
+
+        <button id="themeBtn" class="btn btn-sm btn-outline-secondary">
+          <span class="d-inline-flex align-items-center gap-1">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="16"
+              height="16"
+              fill="currentColor"
+              class="bi bi-moon-stars"
+              viewBox="0 0 16 16"
+            >
+              <path
+                d="M6 .278a.5.5 0 0 1 .52.063A7 7 0 1 0 15.66 9.48.5.5 0 0 1 15 10a6 6 0 1 1-8.485-8.485A.5.5 0 0 1 6 .278Z"
+              />
+              <path
+                d="M7.5 2.5v1a.5.5 0 0 0 1 0v-1h1a.5.5 0 0 0 0-1h-1v-1a.5.5 0 0 0-1 0v1h-1a.5.5 0 0 0 0 1h1Z"
+              />
+            </svg>
+            Theme
+          </span>
+        </button>
+      </div>
+    </header>
+
+    <!-- MAIN -->
+    <main class="container pb-4" style="max-width: 1080px">
+      <div class="row g-4 align-items-stretch">
+        <!-- FORM CARD -->
+        <div class="col-12 col-lg-5">
+          <section class="glass p-4 h-100">
+            <h4 class="mb-2">Scrape posts & top comments</h4>
+            <p class="text-muted mb-4"></p>
+
+            <form id="startForm" class="d-grid gap-3">
+              <div>
+                <label class="form-label">Subreddit (without “r/”)</label>
+                <div class="input-group">
+                  <span class="input-group-text">r/</span>
+                  <input
+                    class="form-control"
+                    name="subreddit"
+                    placeholder="IndiaCoffee"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label class="form-label">Timeframe (days)</label>
+                <input
+                  type="number"
+                  class="form-control"
+                  name="days"
+                  value="7"
+                  min="1"
+                  max="365"
+                  required
+                />
+              </div>
+
+              <button class="btn brand-btn btn-lg" type="submit" id="goBtn">
+                <span class="start-label">Start</span>
+                <span
+                  class="spinner-border spinner-border-sm ms-2 d-none"
+                  id="goSpinner"
+                  role="status"
+                  aria-hidden="true"
+                ></span>
+              </button>
+
+              <div class="small text-muted">
+                Pro tip: keep the tab open; you can start another job after this
+                one completes.
+              </div>
+            </form>
+          </section>
+        </div>
+
+        <!-- STATUS CARD -->
+        <div class="col-12 col-lg-7">
+          <section class="glass p-4 h-100">
+            <div class="d-flex align-items-center justify-content-between mb-3">
+              <h5 class="m-0">Job Status</h5>
+              <a
+                id="downloadBtn"
+                class="btn btn-success disabled"
+                href="#"
+                download
+              >
+                Download CSV
+              </a>
+            </div>
+
+            <div id="jobPanel" class="mb-3 d-none">
+              <div
+                class="progress mb-2"
+                role="progressbar"
+                aria-label="Scrape progress"
+                aria-valuemin="0"
+                aria-valuemax="100"
+              >
+                <div id="bar" class="progress-bar" style="width: 0%"></div>
+              </div>
+              <div id="jobMsg" class="text-muted">Starting…</div>
+            </div>
+
+            <div
+              class="p-3 rounded-3"
+              style="
+                background: rgba(255, 255, 255, 0.55);
+                border: 1px solid var(--glass-stroke);
+              "
+            >
+              <pre id="preview" class="text-muted">
+No job yet. Start a scrape to see live updates.</pre
+              >
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- Error Toast -->
+      <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 1080">
+        <div
+          id="errorToast"
+          class="toast align-items-center text-bg-danger border-0"
+          role="alert"
+          aria-live="assertive"
+          aria-atomic="true"
+        >
+          <div class="d-flex">
+            <div class="toast-body" id="errorText">Something went wrong.</div>
+            <button
+              type="button"
+              class="btn-close btn-close-white me-2 m-auto"
+              data-bs-dismiss="toast"
+              aria-label="Close"
+            ></button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
     <script>
+      // THEME TOGGLE (persisted)
+      const themeBtn = document.getElementById("themeBtn");
+      const savedTheme = localStorage.getItem("theme");
+      const prefersDark =
+        window.matchMedia &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches;
+      function setTheme(t) {
+        document.documentElement.setAttribute("data-bs-theme", t);
+        localStorage.setItem("theme", t);
+      }
+      setTheme(savedTheme || (prefersDark ? "dark" : "light"));
+      themeBtn.addEventListener("click", () => {
+        const cur = document.documentElement.getAttribute("data-bs-theme");
+        setTheme(cur === "light" ? "dark" : "light");
+      });
+
+      // PARALLAX (cheap, mobile-friendly)
+      const layers = Array.from(document.querySelectorAll(".p-layer"));
+      let ticking = false;
+      function onScroll() {
+        if (!ticking) {
+          window.requestAnimationFrame(() => {
+            const y = window.scrollY || 0;
+            layers.forEach((el) => {
+              const speed = parseFloat(el.dataset.speed || 0.1);
+              el.style.transform = "translate3d(0," + y * speed + "px,0)";
+            });
+            ticking = false;
+          });
+          ticking = true;
+        }
+      }
+      document.addEventListener("scroll", onScroll, { passive: true });
+
+      // UI ELEMENTS
       const form = document.getElementById("startForm");
       const jobPanel = document.getElementById("jobPanel");
       const jobMsg = document.getElementById("jobMsg");
       const bar = document.getElementById("bar");
       const preview = document.getElementById("preview");
       const goBtn = document.getElementById("goBtn");
+      const goSpinner = document.getElementById("goSpinner");
       const downloadBtn = document.getElementById("downloadBtn");
+      const errorToast = new bootstrap.Toast(
+        document.getElementById("errorToast")
+      );
+      const errorText = document.getElementById("errorText");
 
       let pollTimer = null;
 
+      function showError(msg) {
+        errorText.textContent = msg || "Unexpected error";
+        errorToast.show();
+      }
+
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+
+        // reset UI
         jobPanel.classList.remove("d-none");
-        jobMsg.textContent = "Starting scrape...";
+        jobMsg.textContent = "Starting…";
         bar.style.width = "0%";
-        goBtn.disabled = true;
         downloadBtn.classList.add("disabled");
+        downloadBtn.removeAttribute("href");
+        preview.textContent = "";
+
+        // lock button
+        goBtn.disabled = true;
+        goSpinner.classList.remove("d-none");
 
         try {
           const resp = await fetch("/start-job", {
@@ -95,51 +446,66 @@
             body: new FormData(form),
           });
           if (!resp.ok) {
-            const txt = await resp.text();
-            jobMsg.classList.replace("alert-info", "alert-danger");
-            jobMsg.textContent = "Error: " + txt;
+            const t = await resp.text().catch(() => resp.statusText);
+            showError("Start error: " + t);
             goBtn.disabled = false;
+            goSpinner.classList.add("d-none");
             return;
           }
           const { job_id } = await resp.json();
-          preview.textContent = "Job started: " + job_id;
+          preview.textContent =
+            "Job started: " + job_id + "\\nPolling every 2s…";
           pollTimer = setInterval(() => pollStatus(job_id), 2000);
+          document
+            .querySelector("#jobPanel")
+            .scrollIntoView({ behavior: "smooth", block: "center" });
         } catch (err) {
-          jobMsg.classList.replace("alert-info", "alert-danger");
-          jobMsg.textContent = "Network error: " + err;
+          showError("Network error: " + String(err));
           goBtn.disabled = false;
+          goSpinner.classList.add("d-none");
         }
       });
 
       async function pollStatus(jobId) {
         try {
           const resp = await fetch(`/job-status/${jobId}`);
+          if (!resp.ok) {
+            const t = await resp.text();
+            showError("Status error: " + t);
+            clearInterval(pollTimer);
+            pollTimer = null;
+            goBtn.disabled = false;
+            goSpinner.classList.add("d-none");
+            return;
+          }
           const data = await resp.json();
           preview.textContent = JSON.stringify(data, null, 2);
           bar.style.width = (data.progress || 0) + "%";
 
           if (data.state === "done") {
-            jobMsg.classList.replace("alert-info", "alert-success");
-            jobMsg.textContent = "Scraping complete. Ready to download.";
-            downloadBtn.href = data.download_url;
+            jobMsg.textContent = "Complete — your CSV is ready.";
+            downloadBtn.href = data.download_url || "#";
             downloadBtn.classList.remove("disabled");
-            bar.classList.remove("progress-bar-animated");
             clearInterval(pollTimer);
+            pollTimer = null;
             goBtn.disabled = false;
+            goSpinner.classList.add("d-none");
           } else if (data.state === "error") {
-            jobMsg.classList.replace("alert-info", "alert-danger");
-            jobMsg.textContent = data.message;
-            bar.classList.remove("progress-bar-animated");
+            jobMsg.textContent = data.message || "Job failed.";
             clearInterval(pollTimer);
+            pollTimer = null;
             goBtn.disabled = false;
+            goSpinner.classList.add("d-none");
+            showError(data.message || "Job failed.");
           } else {
-            jobMsg.textContent = data.message;
+            jobMsg.textContent = data.message || "Working…";
           }
         } catch (err) {
-          jobMsg.classList.replace("alert-info", "alert-danger");
-          jobMsg.textContent = "Polling error: " + err;
+          showError("Polling error: " + String(err));
           clearInterval(pollTimer);
+          pollTimer = null;
           goBtn.disabled = false;
+          goSpinner.classList.add("d-none");
         }
       }
     </script>
