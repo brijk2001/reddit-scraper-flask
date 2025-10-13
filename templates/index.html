@@ -91,6 +91,10 @@
                   <small class="form-text text-muted"
                     >Scrape all posts from the last X days (no limit)</small
                   >
+                  <small class="form-text text-warning d-block mt-1">
+                    ⏱️ Estimated time: 1-7 days (~30 sec), 8-30 days (~2-3 min),
+                    30+ days (~5+ min)
+                  </small>
                 </div>
               </div>
 
@@ -121,7 +125,12 @@
                 <span class="visually-hidden">Loading...</span>
               </div>
               <p class="mt-3 text-muted">
-                Fetching posts and comments... This may take a moment.
+                Fetching all posts from the timeframe... This may take several
+                minutes for active subreddits.
+              </p>
+              <p class="small text-muted">
+                The app will automatically stop when it reaches posts older than
+                your timeframe.
               </p>
             </div>
 
