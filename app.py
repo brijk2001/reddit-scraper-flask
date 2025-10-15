@@ -17,11 +17,10 @@ app = Flask(__name__)
 # ---------------------------
 # Config / constants
 # ---------------------------
-# Reddit listing endpoints effectively cap around ~1000 items.
-LISTING_CAP = 1000           # stop scraping when this many posts are processed
+LISTING_CAP = 1000            # practical Reddit listing cap (~1000)
 PROGRESS_POLL_DELAY_FAST = 0.1
 PROGRESS_POLL_DELAY_SLOW = 0.3
-JOB_RETENTION_SECONDS = 3600  # keep CSVs & job entries for 1h
+JOB_RETENTION_SECONDS = 3600  # keep job metadata & CSVs ~1h
 
 # ---------------------------
 # In-memory job registry
@@ -33,13 +32,15 @@ JOB_RETENTION_SECONDS = 3600  # keep CSVs & job entries for 1h
 #   "filename": "/tmp/....csv" or None,
 #   "created_at": ts,
 #   "count": int,
-#   "from_date": "YYYY-MM-DD",   # newest seen
-#   "to_date": "YYYY-MM-DD",     # oldest seen
-#   "cap_hit": bool
+#   "from_date": "YYYY-MM-DD",   # newest included
+#   "to_date": "YYYY-MM-DD",     # oldest included
+#   "cap_hit": bool,
+#   "requested_from": "YYYY-MM-DD",
+#   "requested_to": "YYYY-MM-DD"
 # }
 JOBS = {}
 JOBS_LOCK = threading.Lock()
-EXECUTOR = ThreadPoolExecutor(max_workers=2)  # adjust as you like
+EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
 
 def make_reddit():
@@ -73,28 +74,45 @@ def csv_escape(text):
     return str(text).replace("\r", " ").replace("\n", " ")
 
 
-def run_scrape_job(job_id, subreddit, days):
+def parse_date_yyyy_mm_dd(s: str) -> datetime:
+    """Parse 'YYYY-MM-DD' into a timezone-aware UTC midnight datetime."""
+    dt = datetime.strptime(s, "%Y-%m-%d")
+    return datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc)
+
+
+def run_scrape_job(job_id, subreddit, start_date_str, end_date_str):
     """
     Background task:
-      - iterates subreddit.new(limit=None) from newest -> older
-      - stops when posts fall below timeframe (min_ts) OR LISTING_CAP reached
-      - writes CSV to system temp dir
-      - records count + coverage window + whether cap was hit
+      - Iterates subreddit.new(limit=None) (newest → older)
+      - Skips posts newer than end_date (created_utc > max_ts)
+      - Stops when older than start_date (created_utc < min_ts)
+      - Stops if LISTING_CAP reached
     """
     safe_set(job_id, state="running", progress=0, message="Starting…")
 
     try:
+        # --- Validate & compute date window (inclusive) ---
+        start_dt = parse_date_yyyy_mm_dd(start_date_str)  # YYYY-MM-DDT00:00:00Z
+        # end of day inclusive: 23:59:59.999...
+        end_dt = parse_date_yyyy_mm_dd(end_date_str) + timedelta(days=1) - timedelta(microseconds=1)
+
+        if end_dt < start_dt:
+            raise ValueError("End date must be on or after start date.")
+
+        min_ts = int(start_dt.timestamp())
+        max_ts = int(end_dt.timestamp())
+
+        # --- Reddit client ---
         reddit = make_reddit()
         sub = reddit.subreddit(subreddit)
 
-        # timeframe lower bound (UTC-aware)
-        min_ts = int((datetime.now(timezone.utc) - timedelta(days=int(days))).timestamp())
-
-        # cross-platform temp file path
+        # --- CSV output (cross-platform tempdir) ---
         tmp_dir = tempfile.gettempdir()
-        out_path = os.path.join(tmp_dir, f"{subreddit}_{days}d_{int(time.time())}_{job_id}.csv")
+        out_path = os.path.join(
+            tmp_dir,
+            f"{subreddit}_{start_date_str}_to_{end_date_str}_{int(time.time())}_{job_id}.csv"
+        )
 
-        # open CSV
         f = open(out_path, "w", newline="", encoding="utf-8")
         writer = csv.writer(f)
         writer.writerow([
@@ -102,24 +120,30 @@ def run_scrape_job(job_id, subreddit, days):
             "comment_id", "comment_parent_id", "comment_body", "comment_author", "comment_score", "comment_created_utc"
         ])
 
+        # --- Iterate listing ---
         count = 0
         cap_hit = False
-        newest_dt = None  # first (newest) post datetime encountered
-        oldest_dt = None  # oldest post datetime encountered (within timeframe)
+        newest_dt_included = None  # first included post (newest in range)
+        oldest_dt_included = None  # last included post (oldest in range)
 
         for submission in sub.new(limit=None):
             created_utc = int(getattr(submission, "created_utc", 0))
-            # We have reached older than timeframe -> stop
+
+            # too new for our window → skip until we get into range
+            if created_utc > max_ts:
+                continue
+
+            # too old → we're past the window; stop the job
             if created_utc < min_ts:
                 break
 
-            # set coverage window
+            # Now we are within [min_ts, max_ts] → include this submission
             this_dt = datetime.fromtimestamp(created_utc, tz=timezone.utc)
-            if newest_dt is None:
-                newest_dt = this_dt  # first item is the newest (listing order)
-            oldest_dt = this_dt     # will keep updating as we go older
+            if newest_dt_included is None:
+                newest_dt_included = this_dt  # first included is the newest in-range
+            oldest_dt_included = this_dt
 
-            # fetch only top-level comments
+            # fetch top-level comments only
             submission.comment_sort = "confidence"
             submission.comments.replace_more(limit=0)
             top_comments = submission.comments
@@ -157,7 +181,6 @@ def run_scrape_job(job_id, subreddit, days):
 
             # progress + pacing
             count += 1
-            # progress is relative to the cap, to avoid jumping from 99→100 too early
             prog = min(99, int((count / LISTING_CAP) * 100))
             if count % 10 == 0:
                 safe_set(job_id, progress=prog, message=f"Scraped {count} posts…")
@@ -165,7 +188,7 @@ def run_scrape_job(job_id, subreddit, days):
             else:
                 time.sleep(PROGRESS_POLL_DELAY_FAST)
 
-            # STOP once we hit the listing cap
+            # stop at listing cap
             if count >= LISTING_CAP:
                 cap_hit = True
                 break
@@ -173,10 +196,16 @@ def run_scrape_job(job_id, subreddit, days):
         f.flush()
         f.close()
 
-        from_date = newest_dt.date().isoformat() if newest_dt else "?"
-        to_date = oldest_dt.date().isoformat() if oldest_dt else "?"
+        # Prepare final message
+        from_date = newest_dt_included.date().isoformat() if newest_dt_included else "—"
+        to_date = oldest_dt_included.date().isoformat() if oldest_dt_included else "—"
+        req_from = start_dt.date().isoformat()
+        req_to = end_dt.date().isoformat()
+
         cap_note = " (API listing cap ~1000 reached)" if cap_hit else ""
-        final_msg = f"Finished {count} posts. Coverage: {to_date} → {from_date}{cap_note}"
+        final_msg = (f"Finished {count} posts. "
+                     f"Requested: {req_from} → {req_to}. "
+                     f"Covered: {to_date} → {from_date}{cap_note}")
 
         safe_set(
             job_id,
@@ -187,7 +216,9 @@ def run_scrape_job(job_id, subreddit, days):
             count=count,
             from_date=from_date,
             to_date=to_date,
-            cap_hit=cap_hit
+            cap_hit=cap_hit,
+            requested_from=req_from,
+            requested_to=req_to
         )
 
     except Exception as e:
@@ -201,15 +232,21 @@ def index():
 
 @app.post("/start-job")
 def start_job():
+    """Start a background scrape for a date range (UTC)."""
     try:
         subreddit = (request.form.get("subreddit") or "").strip()
-        days = int(request.form.get("days") or 7)
+        start_date = (request.form.get("start_date") or "").strip()
+        end_date = (request.form.get("end_date") or "").strip()
         if not subreddit:
             return abort(400, "Subreddit is required.")
-        if days < 1 or days > 365:
-            return abort(400, "Days must be between 1 and 365.")
+        if not start_date or not end_date:
+            return abort(400, "Start and end dates are required (YYYY-MM-DD).")
+
+        # Validate parse here to fail fast
+        _ = parse_date_yyyy_mm_dd(start_date)
+        _ = parse_date_yyyy_mm_dd(end_date)
     except Exception:
-        return abort(400, "Invalid input.")
+        return abort(400, "Invalid input. Use YYYY-MM-DD for dates.")
 
     job_id = uuid.uuid4().hex[:12]
     with JOBS_LOCK:
@@ -222,10 +259,12 @@ def start_job():
             "count": 0,
             "from_date": None,
             "to_date": None,
-            "cap_hit": False
+            "cap_hit": False,
+            "requested_from": start_date,
+            "requested_to": end_date,
         }
 
-    EXECUTOR.submit(run_scrape_job, job_id, subreddit, days)
+    EXECUTOR.submit(run_scrape_job, job_id, subreddit, start_date, end_date)
     return jsonify({"job_id": job_id})
 
 
@@ -236,7 +275,6 @@ def job_status(job_id):
     if not job:
         return jsonify({"error": "not_found"}), 404
 
-    # Include the extra fields in the status JSON so the UI (or you) can show them
     resp = {
         "state": job["state"],
         "progress": job["progress"],
@@ -244,6 +282,8 @@ def job_status(job_id):
         "count": job.get("count"),
         "from_date": job.get("from_date"),
         "to_date": job.get("to_date"),
+        "requested_from": job.get("requested_from"),
+        "requested_to": job.get("requested_to"),
         "cap_hit": job.get("cap_hit"),
     }
     if job["state"] == "done" and job.get("filename"):
@@ -294,5 +334,4 @@ def after_request(resp):
 
 
 if __name__ == "__main__":
-    # Local dev
     app.run(host="0.0.0.0", port=5000, debug=True)
