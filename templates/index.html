@@ -1,426 +1,344 @@
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="light">
+<html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <title>Reddit Scraper</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#6c5ce7" />
-    <link
-      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-      rel="stylesheet"
-    />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap"
-      rel="stylesheet"
-    />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reddit Historical Scraper</title>
     <style>
-      :root {
-        --brand: #6c5ce7;
-        --brand-2: #a66cff;
-        --glass-bg: rgba(255, 255, 255, 0.12);
-        --glass-stroke: rgba(255, 255, 255, 0.35);
-        --shadow: 0 12px 40px rgba(20, 20, 40, 0.14);
-        --text-muted: #7a8499;
-      }
-      [data-bs-theme="dark"] {
-        --glass-bg: rgba(20, 20, 28, 0.35);
-        --glass-stroke: rgba(255, 255, 255, 0.1);
-        --text-muted: #9aa6bd;
-      }
-      html,
       body {
-        height: 100%;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        margin: 20px;
+        background-color: #f0f2f5;
+        color: #333;
       }
-      body {
-        font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial,
-          sans-serif;
-        overflow-x: hidden;
-        background: radial-gradient(
-            120% 100% at 10% -10%,
-            #eaeaff 0%,
-            transparent 60%
-          ),
-          radial-gradient(110% 90% at 110% 0%, #f4e9ff 0%, transparent 55%),
-          linear-gradient(180deg, #f7f8fc 0%, #eef1fb 60%, #e9ecf7 100%);
+      .container {
+        max-width: 800px;
+        margin: auto;
+        background-color: #fff;
+        padding: 30px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
       }
-      [data-bs-theme="dark"] body {
-        background: radial-gradient(
-            120% 100% at 10% -10%,
-            #1e2030 0%,
-            transparent 60%
-          ),
-          radial-gradient(110% 90% at 110% 0%, #1b1d2b 0%, transparent 55%),
-          linear-gradient(180deg, #0f111a 0%, #141826 60%, #121422 100%);
+      h1 {
+        text-align: center;
+        color: #ff4500;
+        margin-bottom: 20px;
       }
-      .parallax {
-        position: fixed;
-        inset: -10vh 0 0 0;
-        pointer-events: none;
-        z-index: -1;
+      form {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+        padding: 20px 0;
+        border-top: 1px solid #ddd;
+        border-bottom: 1px solid #ddd;
+        margin-bottom: 20px;
       }
-      .p-layer {
-        position: absolute;
-        border-radius: 999px;
-        filter: blur(20px);
-        opacity: 0.55;
-        will-change: transform;
+      .form-group {
+        display: flex;
+        flex-direction: column;
       }
-      .p1 {
-        width: 42vmin;
-        height: 42vmin;
-        left: 6vw;
-        top: 8vh;
-        background: linear-gradient(135deg, #c9c2ff, #e8e3ff);
+      label {
+        margin-bottom: 5px;
+        font-weight: 600;
+        color: #555;
       }
-      .p2 {
-        width: 56vmin;
-        height: 56vmin;
-        right: -8vw;
-        top: 2vh;
-        background: linear-gradient(135deg, #f6d9ff, #e9f0ff);
+      input[type="text"],
+      input[type="date"] {
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 16px;
       }
-      .p3 {
-        width: 36vmin;
-        height: 36vmin;
-        left: 55vw;
-        top: 45vh;
-        background: linear-gradient(135deg, #b7f0ff, #e9f5ff);
+      .checkbox-group {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 15px;
       }
-      .glass {
-        background: var(--glass-bg);
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        border: 1px solid var(--glass-stroke);
-        border-radius: 18px;
-        box-shadow: var(--shadow);
+      input[type="checkbox"] {
+        transform: scale(1.2);
       }
-      .brand-btn.btn {
-        --bs-btn-bg: var(--brand);
-        --bs-btn-border-color: var(--brand);
-        --bs-btn-hover-bg: #5a4be1;
-        --bs-btn-hover-border-color: #5a4be1;
+      button {
+        background-color: #0079d3;
+        color: white;
+        padding: 10px 15px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+        transition: background-color 0.3s;
+        grid-column: 1 / -1;
       }
-      .progress {
+      button:hover {
+        background-color: #005bb5;
+      }
+      button:disabled {
+        background-color: #999;
+        cursor: not-allowed;
+      }
+
+      .job-list {
+        margin-top: 20px;
+      }
+      .job-item {
+        background-color: #fff;
+        border: 1px solid #eee;
+        padding: 15px;
+        margin-bottom: 10px;
+        border-radius: 6px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+      }
+      .job-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-weight: bold;
+        margin-bottom: 10px;
+      }
+      .job-status {
+        font-weight: normal;
+        padding: 3px 8px;
+        border-radius: 3px;
+        font-size: 0.9em;
+      }
+      .status-queued {
+        background-color: #ffe0b2;
+        color: #e65100;
+      }
+      .status-running {
+        background-color: #c8e6c9;
+        color: #388e3c;
+      }
+      .status-done {
+        background-color: #bbdefb;
+        color: #1565c0;
+      }
+      .status-error {
+        background-color: #ffcdd2;
+        color: #c62828;
+      }
+
+      .progress-bar-container {
         height: 10px;
-        background: rgba(120, 120, 160, 0.15);
+        background-color: #eee;
+        border-radius: 5px;
+        margin-top: 5px;
+        overflow: hidden;
       }
       .progress-bar {
-        background: linear-gradient(90deg, var(--brand), var(--brand-2));
+        height: 100%;
+        background-color: #ff4500;
+        transition: width 0.5s;
       }
-      .app-header {
-        padding-block: 20px;
-      }
-      .wordmark {
-        font-weight: 700;
-        letter-spacing: 0.2px;
-      }
-      pre {
-        white-space: pre-wrap;
-        word-break: break-word;
-        margin: 0;
-      }
-      @media (max-width: 575.98px) {
-        .wordmark {
-          font-size: 1.1rem;
-        }
+      .download-link {
+        color: #0079d3;
+        text-decoration: none;
+        font-weight: bold;
+        margin-top: 10px;
+        display: inline-block;
       }
     </style>
   </head>
-
   <body>
-    <div class="parallax" aria-hidden="true">
-      <div class="p-layer p1" data-speed="0.15"></div>
-      <div class="p-layer p2" data-speed="0.08"></div>
-      <div class="p-layer p3" data-speed="0.2"></div>
+    <div class="container">
+      <h1>Reddit Historical Data Scraper 🚀</h1>
+      <p>
+        Use the Pushshift-anchored method to scrape historical posts
+        month-to-month and bypass the 1,000-post limit.
+      </p>
+
+      <form id="scrape-form">
+        <div class="form-group">
+          <label for="subreddit">Subreddit (e.g., wallstreetbets)</label>
+          <input
+            type="text"
+            id="subreddit"
+            name="subreddit"
+            required
+            placeholder="r/subreddit_name"
+          />
+        </div>
+        <div class="form-group">
+          <label for="start_date">Start Date (YYYY-MM-DD)</label>
+          <input type="date" id="start_date" name="start_date" required />
+        </div>
+        <div class="form-group">
+          <label for="end_date">End Date (YYYY-MM-DD)</label>
+          <input type="date" id="end_date" name="end_date" required />
+        </div>
+        <div class="checkbox-group">
+          <input
+            type="checkbox"
+            id="include_comments"
+            name="include_comments"
+          />
+          <label for="include_comments"
+            >Include Top-Level Comments (Slower)</label
+          >
+        </div>
+        <button type="submit" id="submit-button">Start Scraping Job</button>
+      </form>
+
+      <h2>Active Jobs</h2>
+      <div id="job-list" class="job-list">
+        <p id="no-jobs">No active jobs. Start one above!</p>
+      </div>
     </div>
 
-    <header class="container app-header">
-      <div class="d-flex justify-content-between align-items-center">
-        <div class="d-flex align-items-center gap-2">
-          <svg width="36" height="36" viewBox="0 0 64 64" aria-hidden="true">
-            <defs>
-              <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0" stop-color="#6c5ce7" />
-                <stop offset="1" stop-color="#a66cff" />
-              </linearGradient>
-            </defs>
-            <path
-              d="M10 18a14 14 0 0 1 14-14h16a14 14 0 0 1 14 14v6a14 14 0 0 1-14 14H29l-8 8v-8H24A14 14 0 0 1 10 24z"
-              fill="url(#g)"
-              opacity=".95"
-            />
-            <text
-              x="28"
-              y="24"
-              font-size="12"
-              text-anchor="middle"
-              fill="#fff"
-              font-family="Inter,Arial"
-              font-weight="700"
-            >
-              r/
-            </text>
-            <circle cx="44" cy="40" r="10" fill="#fff" opacity=".95" />
-            <circle
-              cx="44"
-              cy="40"
-              r="6.3"
-              fill="none"
-              stroke="#6c5ce7"
-              stroke-width="3"
-            />
-            <rect
-              x="51"
-              y="46"
-              width="12"
-              height="4.5"
-              rx="2.2"
-              fill="#6c5ce7"
-              transform="rotate(35 51 46)"
-            />
-          </svg>
-          <div class="wordmark fs-4">Reddit Scraper</div>
-        </div>
-        <button id="themeBtn" class="btn btn-sm btn-outline-secondary">
-          Theme
-        </button>
-      </div>
-    </header>
-
-    <main class="container pb-4" style="max-width: 1080px">
-      <div class="row g-4 align-items-stretch">
-        <!-- Form -->
-        <div class="col-12 col-lg-5">
-          <section class="glass p-4 h-100">
-            <h4 class="mb-2">Scrape by date range</h4>
-            <p class="text-muted mb-4">
-              Choose a subreddit and a date range (inclusive).
-            </p>
-
-            <form id="startForm" class="d-grid gap-3">
-              <div>
-                <label class="form-label">Subreddit (without “r/”)</label>
-                <div class="input-group">
-                  <span class="input-group-text">r/</span>
-                  <input
-                    class="form-control"
-                    name="subreddit"
-                    placeholder="IndiaCoffee"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div class="row g-2">
-                <div class="col-6">
-                  <label class="form-label">Start date</label>
-                  <input
-                    type="date"
-                    class="form-control"
-                    name="start_date"
-                    required
-                  />
-                </div>
-                <div class="col-6">
-                  <label class="form-label">End date</label>
-                  <input
-                    type="date"
-                    class="form-control"
-                    name="end_date"
-                    required
-                  />
-                </div>
-              </div>
-
-              <button class="btn brand-btn btn-lg" type="submit" id="goBtn">
-                <span class="start-label">Start</span>
-                <span
-                  class="spinner-border spinner-border-sm ms-2 d-none"
-                  id="goSpinner"
-                  role="status"
-                  aria-hidden="true"
-                ></span>
-              </button>
-
-              <div class="small text-muted">
-                Tip: Keep the tab open while it runs. The CSV auto-enables when
-                ready.
-              </div>
-            </form>
-          </section>
-        </div>
-
-        <!-- Status -->
-        <div class="col-12 col-lg-7">
-          <section class="glass p-4 h-100">
-            <div class="d-flex align-items-center justify-content-between mb-3">
-              <h5 class="m-0">Job Status</h5>
-              <a
-                id="downloadBtn"
-                class="btn btn-success disabled"
-                href="#"
-                download
-                >Download CSV</a
-              >
-            </div>
-
-            <div id="jobPanel" class="mb-3 d-none">
-              <div
-                class="progress mb-2"
-                role="progressbar"
-                aria-label="Scrape progress"
-                aria-valuemin="0"
-                aria-valuemax="100"
-              >
-                <div id="bar" class="progress-bar" style="width: 0%"></div>
-              </div>
-              <div id="jobMsg" class="text-muted">Starting…</div>
-            </div>
-
-            <div
-              class="p-3 rounded-3"
-              style="
-                background: rgba(255, 255, 255, 0.55);
-                border: 1px solid var(--glass-stroke);
-              "
-            >
-              <pre id="preview" class="text-muted">
-No job yet. Start a scrape to see live updates.</pre
-              >
-            </div>
-          </section>
-        </div>
-      </div>
-    </main>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-      // Theme toggle
-      const themeBtn = document.getElementById("themeBtn");
-      const savedTheme = localStorage.getItem("theme");
-      const prefersDark =
-        window.matchMedia &&
-        window.matchMedia("(prefers-color-scheme: dark)").matches;
-      function setTheme(t) {
-        document.documentElement.setAttribute("data-bs-theme", t);
-        localStorage.setItem("theme", t);
-      }
-      setTheme(savedTheme || (prefersDark ? "dark" : "light"));
-      themeBtn.addEventListener("click", () => {
-        const cur = document.documentElement.getAttribute("data-bs-theme");
-        setTheme(cur === "light" ? "dark" : "light");
-      });
+      const form = document.getElementById("scrape-form");
+      const jobList = document.getElementById("job-list");
+      const noJobs = document.getElementById("no-jobs");
+      const jobs = {}; // Store job details
 
-      // Light parallax
-      const layers = Array.from(document.querySelectorAll(".p-layer"));
-      let ticking = false;
-      function onScroll() {
-        if (!ticking) {
-          window.requestAnimationFrame(() => {
-            const y = window.scrollY || 0;
-            layers.forEach((el) => {
-              const speed = parseFloat(el.dataset.speed || 0.1);
-              el.style.transform = "translate3d(0," + y * speed + "px,0)";
-            });
-            ticking = false;
-          });
-          ticking = true;
-        }
-      }
-      document.addEventListener("scroll", onScroll, { passive: true });
-
-      // Job flow
-      const form = document.getElementById("startForm");
-      const jobPanel = document.getElementById("jobPanel");
-      const jobMsg = document.getElementById("jobMsg");
-      const bar = document.getElementById("bar");
-      const preview = document.getElementById("preview");
-      const goBtn = document.getElementById("goBtn");
-      const goSpinner = document.getElementById("goSpinner");
-      const downloadBtn = document.getElementById("downloadBtn");
-
-      let pollTimer = null;
+      // Polling interval (adjust as needed)
+      const POLL_INTERVAL = 3000;
 
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
-        if (pollTimer) {
-          clearInterval(pollTimer);
-          pollTimer = null;
+        const submitButton = document.getElementById("submit-button");
+        submitButton.disabled = true;
+        submitButton.textContent = "Submitting...";
+
+        const formData = new FormData(form);
+        const data = Object.fromEntries(formData.entries());
+
+        // Basic validation
+        if (new Date(data.start_date) > new Date(data.end_date)) {
+          alert("Start date cannot be after end date.");
+          submitButton.disabled = false;
+          submitButton.textContent = "Start Scraping Job";
+          return;
         }
 
-        jobPanel.classList.remove("d-none");
-        jobMsg.textContent = "Starting…";
-        bar.style.width = "0%";
-        downloadBtn.classList.add("disabled");
-        downloadBtn.removeAttribute("href");
-        preview.textContent = "";
-
-        goBtn.disabled = true;
-        goSpinner.classList.remove("d-none");
-
         try {
-          const resp = await fetch("/start-job", {
+          const response = await fetch("/start-job", {
             method: "POST",
-            body: new FormData(form),
+            body: formData,
           });
-          if (!resp.ok) {
-            const t = await resp.text().catch(() => resp.statusText);
-            jobMsg.textContent = "Start error: " + t;
-            goBtn.disabled = false;
-            goSpinner.classList.add("d-none");
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            alert(`Error: ${errorText}`);
             return;
           }
-          const { job_id } = await resp.json();
-          preview.textContent =
-            "Job started: " + job_id + "\nPolling every 2s…";
-          pollTimer = setInterval(() => pollStatus(job_id), 2000);
-        } catch (err) {
-          jobMsg.textContent = "Network error: " + String(err);
-          goBtn.disabled = false;
-          goSpinner.classList.add("d-none");
+
+          const result = await response.json();
+          const jobId = result.job_id;
+
+          // Add job to local storage/state
+          jobs[jobId] = {
+            id: jobId,
+            subreddit: data.subreddit,
+            start: data.start_date,
+            end: data.end_date,
+            comments: data.include_comments === "on" ? "Yes" : "No",
+            status: "queued",
+            progress: 0,
+            message: "Queued",
+            element: createJobElement(jobId, data),
+          };
+
+          // Clear form and start polling
+          form.reset();
+          noJobs.style.display = "none";
+          jobList.prepend(jobs[jobId].element);
+          pollJobStatus(jobId);
+        } catch (error) {
+          console.error("Submission Error:", error);
+          alert("An unexpected error occurred. Check the console.");
+        } finally {
+          submitButton.disabled = false;
+          submitButton.textContent = "Start Scraping Job";
         }
       });
 
-      async function pollStatus(jobId) {
+      function createJobElement(jobId, data) {
+        const div = document.createElement("div");
+        div.className = "job-item";
+        div.id = `job-${jobId}`;
+        div.innerHTML = `
+                <div class="job-header">
+                    <span>Job ID: ${jobId} | r/${data.subreddit} (${data.start} to ${data.end})</span>
+                    <span class="job-status status-queued" id="status-${jobId}">Queued</span>
+                </div>
+                <div id="message-${jobId}">Queued</div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="progress-${jobId}" style="width: 0%"></div>
+                </div>
+            `;
+        return div;
+      }
+
+      async function pollJobStatus(jobId) {
+        const job = jobs[jobId];
+        if (!job) return;
+
         try {
-          const resp = await fetch(`/job-status/${jobId}`);
-          if (!resp.ok) {
-            const t = await resp.text();
-            jobMsg.textContent = "Status error: " + t;
-            clearInterval(pollTimer);
-            pollTimer = null;
-            goBtn.disabled = false;
-            goSpinner.classList.add("d-none");
+          const response = await fetch(`/job-status/${jobId}`);
+          if (!response.ok) {
+            jobs[jobId].status = "error";
+            jobs[jobId].message = "Job not found or API error.";
+            updateJobDisplay(jobId);
             return;
           }
-          const data = await resp.json();
-          preview.textContent = JSON.stringify(data, null, 2);
-          bar.style.width = (data.progress || 0) + "%";
+          const statusData = await response.json();
 
-          if (data.state === "done") {
-            jobMsg.textContent = data.message || "Complete.";
-            downloadBtn.href = data.download_url || "#";
-            downloadBtn.classList.remove("disabled");
-            clearInterval(pollTimer);
-            pollTimer = null;
-            goBtn.disabled = false;
-            goSpinner.classList.add("d-none");
-          } else if (data.state === "error") {
-            jobMsg.textContent = data.message || "Job failed.";
-            clearInterval(pollTimer);
-            pollTimer = null;
-            goBtn.disabled = false;
-            goSpinner.classList.add("d-none");
-          } else {
-            jobMsg.textContent = data.message || "Working…";
+          // Update local job data
+          job.status = statusData.state;
+          job.progress = statusData.progress || 0;
+          job.message = statusData.message || "Processing...";
+          job.downloadUrl = statusData.download_url;
+
+          updateJobDisplay(jobId);
+
+          if (job.status === "running" || job.status === "queued") {
+            // Continue polling
+            setTimeout(() => pollJobStatus(jobId), POLL_INTERVAL);
           }
-        } catch (err) {
-          jobMsg.textContent = "Polling error: " + String(err);
-          clearInterval(pollTimer);
-          pollTimer = null;
-          goBtn.disabled = false;
-          goSpinner.classList.add("d-none");
+        } catch (error) {
+          console.error(`Polling error for job ${jobId}:`, error);
+          job.status = "error";
+          job.message = `Polling failed: ${error.message}`;
+          updateJobDisplay(jobId);
         }
+      }
+
+      function updateJobDisplay(jobId) {
+        const job = jobs[jobId];
+        const statusEl = document.getElementById(`status-${jobId}`);
+        const messageEl = document.getElementById(`message-${jobId}`);
+        const progressEl = document.getElementById(`progress-${jobId}`);
+        const jobItemEl = document.getElementById(`job-${jobId}`);
+
+        if (!statusEl) return;
+
+        // Update Status Badge
+        statusEl.textContent = job.status.toUpperCase();
+        statusEl.className = `job-status status-${job.status}`;
+
+        // Update Message
+        messageEl.innerHTML = job.message;
+
+        // Update Progress Bar
+        progressEl.style.width = `${job.progress}%`;
+
+        // Final state actions
+        if (job.status === "done" && job.downloadUrl) {
+          messageEl.innerHTML += ` | <a href="${job.downloadUrl}" class="download-link" target="_blank">Download CSV</a>`;
+          // Stop polling
+        } else if (job.status === "error") {
+          // Keep progress at 100 for visibility of failure
+          progressEl.style.width = "100%";
+          jobItemEl.style.backgroundColor = "#fff0f0";
+          // Stop polling
+        }
+      }
+
+      // Initial check to hide 'No active jobs' if necessary (though usually empty on start)
+      if (Object.keys(jobs).length > 0) {
+        noJobs.style.display = "none";
       }
     </script>
   </body>

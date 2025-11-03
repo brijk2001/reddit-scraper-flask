@@ -22,3 +22,9 @@ Thumbs.db
 
 # CSV exports
 *.csv
+
+build/
+dist/
+og_app.py
+app.spec
+templates/og_index.html
