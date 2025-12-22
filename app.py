@@ -229,9 +229,29 @@ def write_submission_with_comments(w,s,ts):
     if not comments_found:
         write_submission_row(w,s,ts)
 
+def compile_keywords(keyword_str):
+    """
+    Returns a list of lowercase keywords.
+    Empty list means 'no filtering'.
+    """
+    if not keyword_str:
+        return []
+    return [k.strip().lower() for k in keyword_str.split(",") if k.strip()]
+
+def post_matches_keywords(submission, keywords):
+    """
+    Returns True if submission matches ANY keyword.
+    """
+    if not keywords:
+        return True  # no filter applied
+
+    text = f"{getattr(submission, 'title', '')} {getattr(submission, 'selftext', '')}".lower()
+    return any(k in text for k in keywords)
+
 
 # ---------- SCRAPER JOB ----------
-def run_scrape_job(job,sub,start_s,end_s,include_comments):
+def run_scrape_job(job,sub,start_s,end_s,include_comments, keywords):
+    keyword_list = compile_keywords(keywords)
     safe_set(job,state="running",message="Starting…")
     logging.info(f"Job {job}: Starting scrape for {sub} from {start_s} to {end_s}")
     try:
@@ -276,6 +296,10 @@ def run_scrape_job(job,sub,start_s,end_s,include_comments):
                 s=reddit.submission(id=sid)
                 dt=datetime.fromtimestamp(int(cu),tz=timezone.utc)
                 
+                # 🔍 Keyword filtering
+                if not post_matches_keywords(s, keyword_list):
+                    continue
+                
                 # Track newest/oldest dates
                 if newest_dt_included is None: newest_dt_included=dt
                 oldest_dt_included=dt
@@ -309,7 +333,13 @@ def run_scrape_job(job,sub,start_s,end_s,include_comments):
         to_d = oldest_dt_included.date().isoformat() if oldest_dt_included else "—"
         
         # Final success message with statistics
-        msg = f"Finished {count} posts. Range: {start_s} → {end_s}. Covered: {to_d} → {from_d}. (Gaps: {empty_days} days of {total_days})"
+        kw_msg = f" | Keywords: {', '.join(keyword_list)}" if keyword_list else ""
+        msg = (
+            f"Finished {count} posts. Range: {start_s} → {end_s}. "
+            f"Covered: {to_d} → {from_d}. "
+            f"(Gaps: {empty_days} days of {total_days}){kw_msg}"
+        )
+        
         logging.info(f"Job {job}: {msg}")
         
         safe_set(job,state="done",progress=100,message=msg,filename=fn,count=count,
@@ -330,6 +360,7 @@ def start_job():
     sub=request.form.get("subreddit","").strip()
     s=request.form.get("start_date","").strip()
     e=request.form.get("end_date","").strip()
+    keywords = request.form.get("keywords", "").strip()
     include_comments=request.form.get("include_comments")=="on"
     if not sub or not s or not e: abort(400,"Missing fields")
     
@@ -344,7 +375,7 @@ def start_job():
         
     j=uuid.uuid4().hex[:12]
     with JOBS_LOCK: JOBS[j]={"state":"queued","progress":0,"message":"Queued","created_at":time.time()}
-    EXECUTOR.submit(run_scrape_job,j,sub,s,e,include_comments)
+    EXECUTOR.submit(run_scrape_job,j,sub,s,e,include_comments, keywords)
     return jsonify({"job_id":j})
 
 @app.get("/job-status/<j>")
