@@ -15,10 +15,15 @@ app = Flask(__name__)
 # ---------- CONFIG ----------
 # Max posts to pull per job (can be increased, but 2500 is a good starting point for stability)
 LISTING_CAP_WITH_COMMENTS = 1000
-LISTING_CAP_POSTS_ONLY = 2500 
+LISTING_CAP_POSTS_ONLY = 2500
 PROGRESS_POLL_DELAY_FAST = 0.08
 PROGRESS_POLL_DELAY_SLOW = 0.25
 JOB_RETENTION_SECONDS = 3600
+
+# Reddit Native API fallback settings
+# Pushshift typically lags 7-14 days behind, so we use Reddit API for recent data
+PUSHSHIFT_LAG_DAYS = int(os.getenv("PUSHSHIFT_LAG_DAYS", "14"))
+REDDIT_API_FETCH_LIMIT = 1000  # Reddit API max is ~1000 posts via .new()
 
 # Recommended Pushshift mirror
 PUSHSHIFT_BASE_URLS = [
@@ -29,7 +34,7 @@ PUSHSHIFT_BASE_URLS = [
 ]
 # Chunking size in seconds (24 hours) - helps find posts in specific windows
 DAILY_CHUNK_SECONDS = int(os.getenv("DAILY_CHUNK_SECONDS", "86400"))
-PUSHSHIFT_PAGE_SIZE = int(os.getenv("PUSHSHIFT_PAGE_SIZE", "500"))
+PUSHSHIFT_PAGE_SIZE = int(os.getenv("PUSHSHIFT_PAGE_SIZE", "100"))
 PUSHSHIFT_MAX_RETRIES = int(os.getenv("PUSHSHIFT_MAX_RETRIES", "4"))
 PUSHSHIFT_DAILY_ATTEMPTS = int(os.getenv("PUSHSHIFT_DAILY_ATTEMPTS", "2"))
 PUSHSHIFT_REQUEST_TIMEOUT = int(os.getenv("PUSHSHIFT_REQUEST_TIMEOUT", "30"))
@@ -61,22 +66,27 @@ def safe_set(j,**u):
         if j in JOBS: JOBS[j].update(u)
 
 def _ps_get_json(session, base_url, params, timeout, max_retries):
-    """Handles API requests with retries and exponential backoff for reliability."""
-    backoff = 0.5
-    for attempt in range(max_retries + 1):
+    headers = {"User-Agent": os.getenv("REDDIT_USER_AGENT", "RedditScraper/1.0")}
+    backoff = 5  # start with 5 seconds
+
+    for attempt in range(max_retries):
         try:
-            headers = {"User-Agent": os.getenv("REDDIT_USER_AGENT", "RedditScraper/1.0")}
-            resp = session.get(base_url, params=params, timeout=timeout, headers=headers)
-            resp.raise_for_status() # Raise for bad status codes (400, 500)
-            return resp.json()
-        except requests.exceptions.RequestException as e:
-            logging.warning(f"Pushshift request failed (Attempt {attempt+1}/{max_retries+1}): {e}")
-            if attempt >= max_retries: raise Exception(f"Failed after {max_retries+1} attempts: {e}")
-            time.sleep(backoff + random.random() * 0.35)
-            backoff = min(backoff * 2, 6)
-        except Exception as e:
-            logging.error(f"Unexpected error in Pushshift API call: {e}")
-            raise
+            r = session.get(base_url, params=params, timeout=timeout, headers=headers)
+            if r.status_code == 429:
+                logging.warning(f"429 rate limit. Sleeping {backoff}s")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+                continue
+
+            r.raise_for_status()
+            return r.json()
+
+        except requests.RequestException as e:
+            logging.warning(f"Pushshift error {attempt+1}/{max_retries}: {e}")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+    return {"data": []}
 
 def iter_pushshift_ids_daily_anchored(sub, after_ts, before_ts, max_results):
     """
@@ -156,15 +166,15 @@ def iter_pushshift_ids_daily_anchored(sub, after_ts, before_ts, max_results):
                 
                 cursor_before_ts = min_seen_ts - 1
                 
-                time.sleep(0.12) # Respect Pushshift rate limits
+                time.sleep(1.5) # Respect Pushshift rate limits
 
             # Check if this day attempt yielded any data
             if day_successful_data_fetch:
                 break # Exit the PUSHSHIFT_DAILY_ATTEMPTS loop, we got data for this day
             else: 
                 # If attempt failed, wait and retry the *entire day* search
-                logging.warning(f"No data for chunk ending {current_end_ts}. Retrying in 5s...")
-                time.sleep(5) 
+                logging.warning(f"No data for day window {day_start_ts} → {current_end_ts}. Skipping day.")
+                break
         
         # AFTER all attempts for the day/chunk:
         if not day_successful_data_fetch: 
@@ -175,6 +185,49 @@ def iter_pushshift_ids_daily_anchored(sub, after_ts, before_ts, max_results):
         
     # The generator yields the post IDs, but we return the summary data at the very end
     return empty_days, total_days
+
+
+def iter_reddit_native_api(reddit, sub, after_ts, before_ts, max_results):
+    """
+    Fallback: Uses Reddit's native API (PRAW) to fetch recent posts.
+    This bypasses Pushshift for recent data that hasn't been indexed yet.
+
+    Yields (submission_object, created_utc_timestamp) tuples.
+    """
+    logging.info(f"Using Reddit native API fallback for r/{sub}")
+
+    try:
+        subreddit = reddit.subreddit(sub)
+        emitted = 0
+        seen_ids = set()
+
+        # Fetch from .new() - gets most recent posts first
+        for submission in subreddit.new(limit=REDDIT_API_FETCH_LIMIT):
+            if emitted >= max_results:
+                break
+
+            created_ts = int(submission.created_utc)
+
+            # Filter by date range
+            if created_ts < after_ts or created_ts > before_ts:
+                # If we've gone past the date range (older posts), we can stop
+                if created_ts < after_ts:
+                    break
+                continue
+
+            if submission.id in seen_ids:
+                continue
+
+            seen_ids.add(submission.id)
+            yield submission, created_ts
+            emitted += 1
+
+            time.sleep(0.1)  # Rate limiting
+
+        logging.info(f"Reddit native API yielded {emitted} posts for r/{sub}")
+
+    except Exception as e:
+        logging.error(f"Reddit native API error for r/{sub}: {e}")
 
 
 # ---------- CSV HELPERS ----------
@@ -250,105 +303,165 @@ def post_matches_keywords(submission, keywords):
 
 
 # ---------- SCRAPER JOB ----------
-def run_scrape_job(job,sub,start_s,end_s,include_comments, keywords):
+def run_scrape_job(job, sub, start_s, end_s, include_comments, keywords):
     keyword_list = compile_keywords(keywords)
-    safe_set(job,state="running",message="Starting…")
+    safe_set(job, state="running", message="Starting…")
     logging.info(f"Job {job}: Starting scrape for {sub} from {start_s} to {end_s}")
     try:
         # Calculate precise start and end timestamps (Unix epoch)
-        start=parse_date(start_s)
-        end=parse_date(end_s)+timedelta(days=1)-timedelta(microseconds=1) 
-        if end<start: raise ValueError("End before start")
-        min_ts,max_ts=int(start.timestamp()),int(end.timestamp())
-        reddit=make_reddit()
-        CAP=LISTING_CAP_WITH_COMMENTS if include_comments else LISTING_CAP_POSTS_ONLY
-        
+        start = parse_date(start_s)
+        end = parse_date(end_s) + timedelta(days=1) - timedelta(microseconds=1)
+        if end < start:
+            raise ValueError("End before start")
+        min_ts, max_ts = int(start.timestamp()), int(end.timestamp())
+        reddit = make_reddit()
+        CAP = LISTING_CAP_WITH_COMMENTS if include_comments else LISTING_CAP_POSTS_ONLY
+
         # Setup temp file for CSV output
-        tmp=tempfile.gettempdir()
-        fn=os.path.join(tmp,f"{sub}_{start_s}_{end_s}_{int(time.time())}_{job}.csv")
-        f=open(fn,"w",newline="",encoding="utf-8")
-        w=csv.writer(f); w.writerow([
-            "post_id","post_title","post_selftext","post_url","post_author","post_score","post_created_utc",
-            "comment_id","comment_parent_id","comment_body","comment_author","comment_score","comment_created_utc"
+        tmp = tempfile.gettempdir()
+        fn = os.path.join(tmp, f"{sub}_{start_s}_{end_s}_{int(time.time())}_{job}.csv")
+        f = open(fn, "w", newline="", encoding="utf-8")
+        w = csv.writer(f)
+        w.writerow([
+            "post_id", "post_title", "post_selftext", "post_url", "post_author", "post_score", "post_created_utc",
+            "comment_id", "comment_parent_id", "comment_body", "comment_author", "comment_score", "comment_created_utc"
         ])
-        
+
         count, cap_hit = 0, False
         newest_dt_included, oldest_dt_included = None, None
-        
-        # Pushshift scraping
-        safe_set(job,message="Scraping with Pushshift (daily micro-chunks)…")
-        source_label="Pushshift (daily anchored)"
-        
-        # Initialize the generator and track empty/total days
-        gen = iter_pushshift_ids_daily_anchored(sub, min_ts, max_ts, CAP)
+        seen_ids = set()  # Track IDs to avoid duplicates across sources
+        sources_used = []
+
+        # Determine if date range includes recent data (within PUSHSHIFT_LAG_DAYS)
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        recent_cutoff_ts = now_ts - (PUSHSHIFT_LAG_DAYS * 86400)
+        has_recent_dates = max_ts > recent_cutoff_ts
+        has_historical_dates = min_ts < recent_cutoff_ts
+
+        # ---------- PHASE 1: Pushshift for historical data ----------
+        pushshift_count = 0
         empty_days, total_days = 0, 0
-        
-        # Iterate over the yielded IDs from the generator
-        for sid, cu in gen:
-            # We expect the generator to yield the ID and timestamp.
-            # The return value (empty_days, total_days) is retrieved after the loop.
-            if isinstance(sid, int) and isinstance(cu, int):
-                empty_days, total_days = sid, cu
-                continue # Skip this if it's the final return value
-            
-            try:
-                # Use PRAW to fetch the full submission data based on the ID from Pushshift
-                s=reddit.submission(id=sid)
-                dt=datetime.fromtimestamp(int(cu),tz=timezone.utc)
-                
-                # 🔍 Keyword filtering
-                if not post_matches_keywords(s, keyword_list):
+
+        if has_historical_dates and count < CAP:
+            # Use Pushshift for historical portion (before the lag cutoff)
+            ps_max_ts = min(max_ts, recent_cutoff_ts) if has_recent_dates else max_ts
+            safe_set(job, message="Scraping historical data with Pushshift…")
+            logging.info(f"Job {job}: Using Pushshift for historical data (up to {PUSHSHIFT_LAG_DAYS} days ago)")
+
+            gen = iter_pushshift_ids_daily_anchored(sub, min_ts, ps_max_ts, CAP - count)
+
+            for sid, cu in gen:
+                if isinstance(sid, int) and isinstance(cu, int):
+                    empty_days, total_days = sid, cu
                     continue
-                
-                # Track newest/oldest dates
-                if newest_dt_included is None: newest_dt_included=dt
-                oldest_dt_included=dt
-                
-                # Write data row
-                (write_submission_with_comments if include_comments else write_submission_row)(w,s,dt.isoformat())
-                count+=1
-                
-                # Update progress
-                if count%10==0:
-                    safe_set(job,progress=min(99,int(count/CAP*100)),
-                             message=f"Scraped {count} posts… ({source_label})")
-                if count>=CAP: cap_hit=True; break
-            except Exception as e:
-                logging.warning(f"Job {job}: Failed to fetch submission {sid} from Reddit API: {e}")
-        
-        # Check the final return of the generator for the empty/total days summary
-        if gen and hasattr(gen, 'gi_frame') and gen.gi_frame:
-            # Try to get the return value if the loop broke early or finished naturally
-            try:
-                # The generator is exhausted, we try to call next() to get the return value, which will raise StopIteration
-                while True: next(gen)
-            except StopIteration as e:
-                if e.value and isinstance(e.value, tuple) and len(e.value) == 2:
-                    empty_days, total_days = e.value
-        
-        f.flush(); f.close()
-        
+
+                if sid in seen_ids:
+                    continue
+
+                try:
+                    s = reddit.submission(id=sid)
+                    dt = datetime.fromtimestamp(int(cu), tz=timezone.utc)
+
+                    if not post_matches_keywords(s, keyword_list):
+                        continue
+
+                    seen_ids.add(sid)
+                    if newest_dt_included is None or dt > newest_dt_included:
+                        newest_dt_included = dt
+                    if oldest_dt_included is None or dt < oldest_dt_included:
+                        oldest_dt_included = dt
+
+                    (write_submission_with_comments if include_comments else write_submission_row)(w, s, dt.isoformat())
+                    count += 1
+                    pushshift_count += 1
+
+                    if count % 10 == 0:
+                        safe_set(job, progress=min(90, int(count / CAP * 100)),
+                                 message=f"Scraped {count} posts (Pushshift: {pushshift_count})…")
+                    if count >= CAP:
+                        cap_hit = True
+                        break
+                except Exception as e:
+                    logging.warning(f"Job {job}: Failed to fetch submission {sid}: {e}")
+
+            # Exhaust generator to get return value
+            if gen and hasattr(gen, 'gi_frame') and gen.gi_frame:
+                try:
+                    while True:
+                        next(gen)
+                except StopIteration as e:
+                    if e.value and isinstance(e.value, tuple) and len(e.value) == 2:
+                        empty_days, total_days = e.value
+
+            if pushshift_count > 0:
+                sources_used.append(f"Pushshift: {pushshift_count}")
+
+        # ---------- PHASE 2: Reddit Native API for recent data ----------
+        reddit_api_count = 0
+
+        if has_recent_dates and count < CAP:
+            # Use Reddit native API for recent portion
+            reddit_min_ts = max(min_ts, recent_cutoff_ts) if has_historical_dates else min_ts
+            safe_set(job, message=f"Scraping recent data with Reddit API (last {PUSHSHIFT_LAG_DAYS} days)…")
+            logging.info(f"Job {job}: Using Reddit native API for recent data")
+
+            for submission, cu in iter_reddit_native_api(reddit, sub, reddit_min_ts, max_ts, CAP - count):
+                if submission.id in seen_ids:
+                    continue
+
+                try:
+                    if not post_matches_keywords(submission, keyword_list):
+                        continue
+
+                    dt = datetime.fromtimestamp(int(cu), tz=timezone.utc)
+                    seen_ids.add(submission.id)
+
+                    if newest_dt_included is None or dt > newest_dt_included:
+                        newest_dt_included = dt
+                    if oldest_dt_included is None or dt < oldest_dt_included:
+                        oldest_dt_included = dt
+
+                    (write_submission_with_comments if include_comments else write_submission_row)(w, submission, dt.isoformat())
+                    count += 1
+                    reddit_api_count += 1
+
+                    if count % 10 == 0:
+                        safe_set(job, progress=min(99, int(count / CAP * 100)),
+                                 message=f"Scraped {count} posts (Reddit API: {reddit_api_count})…")
+                    if count >= CAP:
+                        cap_hit = True
+                        break
+                except Exception as e:
+                    logging.warning(f"Job {job}: Failed to process submission {submission.id}: {e}")
+
+            if reddit_api_count > 0:
+                sources_used.append(f"Reddit API: {reddit_api_count}")
+
+        f.flush()
+        f.close()
+
         # Format dates for final message
-        from_d = newest_dt_included.date().isoformat() if newest_dt_included else "—"
-        to_d = oldest_dt_included.date().isoformat() if oldest_dt_included else "—"
-        
-        # Final success message with statistics
+        from_d = oldest_dt_included.date().isoformat() if oldest_dt_included else "—"
+        to_d = newest_dt_included.date().isoformat() if newest_dt_included else "—"
+
+        # Build final message with source breakdown
         kw_msg = f" | Keywords: {', '.join(keyword_list)}" if keyword_list else ""
+        sources_str = ", ".join(sources_used) if sources_used else "No data found"
         msg = (
             f"Finished {count} posts. Range: {start_s} → {end_s}. "
-            f"Covered: {to_d} → {from_d}. "
-            f"(Gaps: {empty_days} days of {total_days}){kw_msg}"
+            f"Covered: {from_d} → {to_d}. "
+            f"Sources: [{sources_str}]{kw_msg}"
         )
-        
+
         logging.info(f"Job {job}: {msg}")
-        
-        safe_set(job,state="done",progress=100,message=msg,filename=fn,count=count,
-                 from_date=from_d,to_date=to_d,cap_hit=cap_hit)
-        
+
+        safe_set(job, state="done", progress=100, message=msg, filename=fn, count=count,
+                 from_date=from_d, to_date=to_d, cap_hit=cap_hit)
+
     except Exception as e:
         error_msg = f"Job {job} failed: {e}"
         logging.error(error_msg)
-        safe_set(job,state="error",message=error_msg)
+        safe_set(job, state="error", message=error_msg)
 
 # ---------- FLASK ROUTES ----------
 @app.route("/")
