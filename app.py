@@ -66,10 +66,12 @@ def _ps_get_json(session, base_url, params, timeout, max_retries):
     headers = {"User-Agent": os.getenv("REDDIT_USER_AGENT", "RedditScraper/1.0")}
     backoff = 5  # start with 5 seconds
 
+    hit_429 = False
     for attempt in range(max_retries):
         try:
             r = session.get(base_url, params=params, timeout=timeout, headers=headers)
             if r.status_code == 429:
+                hit_429 = True
                 logging.warning(f"429 rate limit. Sleeping {backoff}s")
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 60)
@@ -83,7 +85,9 @@ def _ps_get_json(session, base_url, params, timeout, max_retries):
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
 
-    return {"data": []}
+    # Exhausted all retries. Flag whether the cause was rate-limiting (429) so the
+    # caller can distinguish "throttled" from a genuinely empty result set.
+    return {"data": [], "_rate_limited": hit_429}
 
 def iter_pushshift_ids_daily_anchored(sub, after_ts, before_ts, max_results):
     """
@@ -133,9 +137,13 @@ def iter_pushshift_ids_daily_anchored(sub, after_ts, before_ts, max_results):
                     except Exception:
                         continue # Try the next base URL/mirror
                 
+                if j and j.get("_rate_limited"):
+                    # Surface throttling to the caller so it isn't reported as "no data".
+                    yield "__RATE_LIMITED__", None
+
                 if not j or not j.get("data"):
                     # No data returned for this page/anchor, stop paginating for this attempt
-                    break 
+                    break
 
                 data = j["data"]
                 new_data_emitted = 0
@@ -392,6 +400,7 @@ def run_scrape_job(job, sub, start_s, end_s, include_comments, keywords):
         # Note: PullPush ingestion currently lags well behind real-time, so very recent
         # ranges may return little or nothing.
         pushshift_count = 0
+        rate_limited = False
         comment_sess = requests.Session()
         safe_set(job, message="Scraping with PullPush…")
         logging.info(f"Job {job}: Using PullPush for {start_s} → {end_s}")
@@ -399,6 +408,10 @@ def run_scrape_job(job, sub, start_s, end_s, include_comments, keywords):
         gen = iter_pushshift_ids_daily_anchored(sub, min_ts, max_ts, CAP)
 
         for d, cu in gen:
+            if isinstance(d, str) and d == "__RATE_LIMITED__":
+                rate_limited = True
+                continue
+
             sid = d.get("id")
             if not sid or sid in seen_ids:
                 continue
@@ -444,7 +457,12 @@ def run_scrape_job(job, sub, start_s, end_s, include_comments, keywords):
 
         # Build final message with source breakdown
         kw_msg = f" | Keywords: {', '.join(keyword_list)}" if keyword_list else ""
-        sources_str = ", ".join(sources_used) if sources_used else "No data found"
+        if sources_used:
+            sources_str = ", ".join(sources_used)
+        elif rate_limited:
+            sources_str = "Rate-limited by PullPush (HTTP 429) — wait a few minutes and try again"
+        else:
+            sources_str = "No data found"
         msg = (
             f"Finished {count} posts. Range: {start_s} → {end_s}. "
             f"Covered: {from_d} → {to_d}. "
