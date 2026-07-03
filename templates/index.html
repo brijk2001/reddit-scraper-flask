@@ -144,8 +144,9 @@
     <div class="container">
       <h1>Reddit Historical Data Scraper 🚀</h1>
       <p>
-        Use the Pushshift-anchored method to scrape historical posts
-        month-to-month and bypass the 1,000-post limit.
+        Export posts and comments from any public subreddit within a date
+        range to CSV. Powered by the PullPush archive — no Reddit login
+        required.
       </p>
 
       <form id="scrape-form">
@@ -269,7 +270,7 @@
         div.id = `job-${jobId}`;
         div.innerHTML = `
                 <div class="job-header">
-                    <span>Job ID: ${jobId} | r/${data.subreddit} (${data.start} to ${data.end})</span>
+                    <span>Job ID: ${jobId} | r/${data.subreddit} (${data.start_date} to ${data.end_date})</span>
                     <span class="job-status status-queued" id="status-${jobId}">Queued</span>
                 </div>
                 <div id="message-${jobId}">Queued</div>
