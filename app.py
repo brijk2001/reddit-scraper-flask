@@ -44,20 +44,17 @@ EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
 # ---------- UTILITIES ----------
 def make_reddit():
-    # PRAW setup: Ensure you have REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, 
-    # REDDIT_USERNAME, REDDIT_PASSWORD, and REDDIT_USER_AGENT set in your .env file
-    # for PRAW to function correctly.
-    try:
-        return praw.Reddit(
-            client_id=os.getenv("REDDIT_CLIENT_ID"),
-            client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
-            username=os.getenv("REDDIT_USERNAME"),
-            password=os.getenv("REDDIT_PASSWORD"),
-            user_agent=os.getenv("REDDIT_USER_AGENT"),
-        )
-    except Exception as e:
-        logging.error(f"PRAW initialization failed: {e}")
-        raise
+    # NOTE: Currently UNUSED. This build runs PullPush-only (no Reddit credentials),
+    # because Reddit's self-serve API is gated behind manual approval.
+    # Once you have APPROVED "script" app credentials, this returns a read-only PRAW
+    # client (client_id + secret only) that can enrich data or fetch recent posts.
+    reddit = praw.Reddit(
+        client_id=os.getenv("REDDIT_CLIENT_ID"),
+        client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
+        user_agent=os.getenv("REDDIT_USER_AGENT"),
+    )
+    reddit.read_only = True
+    return reddit
 
 def csv_escape(t): return "" if t is None else str(t).replace("\r"," ").replace("\n"," ")
 def parse_date(s): return datetime.strptime(s,"%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -123,7 +120,9 @@ def iter_pushshift_ids_daily_anchored(sub, after_ts, before_ts, max_results):
                     "size": min(PUSHSHIFT_PAGE_SIZE, max_results - emitted),
                     "sort": "desc",
                     "sort_type": "created_utc",
-                    "fields": "id,created_utc",
+                    # Full fields so we can build CSV rows directly from PullPush,
+                    # with no PRAW enrichment (no Reddit credentials required).
+                    "fields": "id,created_utc,title,selftext,url,author,score",
                 }
                 
                 j = None
@@ -146,10 +145,10 @@ def iter_pushshift_ids_daily_anchored(sub, after_ts, before_ts, max_results):
                     if not sid or not cu: continue
                     cu = int(cu)
                     
-                    if cu < day_start_ts or cu > current_end_ts: continue 
+                    if cu < day_start_ts or cu > current_end_ts: continue
                     if sid in day_fetched_ids: continue # Skip if already yielded in a previous page/attempt
 
-                    yield sid, cu # SUCCESS: Yield the post ID and timestamp
+                    yield d, cu # SUCCESS: Yield the full record dict + timestamp
                     day_fetched_ids.add(sid)
                     emitted += 1
                     new_data_emitted += 1
@@ -282,6 +281,62 @@ def write_submission_with_comments(w,s,ts):
     if not comments_found:
         write_submission_row(w,s,ts)
 
+# ---------- PULLPUSH-NATIVE HELPERS (no PRAW / no credentials) ----------
+PULLPUSH_COMMENT_URL = os.getenv(
+    "PULLPUSH_COMMENT_URL", "https://api.pullpush.io/reddit/search/comment/"
+)
+
+def fetch_pullpush_comments(session, link_id):
+    """Fetch top-level+ comments for a post directly from PullPush's comment endpoint.
+    Returns a list of comment dicts (may be empty)."""
+    params = {
+        "link_id": link_id,
+        "size": 100,
+        "sort": "desc",
+        "sort_type": "created_utc",
+        "fields": "id,parent_id,body,author,score,created_utc",
+    }
+    j = _ps_get_json(session, PULLPUSH_COMMENT_URL, params,
+                     PUSHSHIFT_REQUEST_TIMEOUT, PUSHSHIFT_MAX_RETRIES)
+    return j.get("data", []) if j else []
+
+def write_pp_submission_row(w, d, ts):
+    """Write one post row straight from a PullPush record dict."""
+    w.writerow([
+        d.get("id", ""), csv_escape(d.get("title", "")), csv_escape(d.get("selftext", "")),
+        csv_escape(d.get("url", "")), d.get("author", ""), d.get("score", ""), ts,
+        "", "", "", "", "", "",
+    ])
+
+def write_pp_submission_with_comments(w, d, ts, comments):
+    """Write a post plus one row per comment, all from PullPush dicts."""
+    wrote_any = False
+    for c in comments:
+        cid = c.get("id")
+        if not cid:
+            continue
+        wrote_any = True
+        c_ts = ""
+        cu = c.get("created_utc")
+        if cu:
+            c_ts = datetime.fromtimestamp(int(cu), tz=timezone.utc).isoformat()
+        w.writerow([
+            d.get("id", ""), csv_escape(d.get("title", "")), csv_escape(d.get("selftext", "")),
+            csv_escape(d.get("url", "")), d.get("author", ""), d.get("score", ""), ts,
+            cid, c.get("parent_id", ""), csv_escape(c.get("body", "")),
+            c.get("author", ""), c.get("score", ""), c_ts,
+        ])
+    if not wrote_any:
+        write_pp_submission_row(w, d, ts)
+
+def post_matches_keywords_dict(d, keywords):
+    """Keyword match against a PullPush record dict."""
+    if not keywords:
+        return True
+    text = f"{d.get('title', '')} {d.get('selftext', '')}".lower()
+    return any(k in text for k in keywords)
+
+
 def compile_keywords(keyword_str):
     """
     Returns a list of lowercase keywords.
@@ -314,7 +369,6 @@ def run_scrape_job(job, sub, start_s, end_s, include_comments, keywords):
         if end < start:
             raise ValueError("End before start")
         min_ts, max_ts = int(start.timestamp()), int(end.timestamp())
-        reddit = make_reddit()
         CAP = LISTING_CAP_WITH_COMMENTS if include_comments else LISTING_CAP_POSTS_ONLY
 
         # Setup temp file for CSV output
@@ -329,113 +383,57 @@ def run_scrape_job(job, sub, start_s, end_s, include_comments, keywords):
 
         count, cap_hit = 0, False
         newest_dt_included, oldest_dt_included = None, None
-        seen_ids = set()  # Track IDs to avoid duplicates across sources
-        sources_used = []
+        seen_ids = set()  # Track IDs to avoid duplicates
 
-        # Determine if date range includes recent data (within PUSHSHIFT_LAG_DAYS)
-        now_ts = int(datetime.now(timezone.utc).timestamp())
-        recent_cutoff_ts = now_ts - (PUSHSHIFT_LAG_DAYS * 86400)
-        has_recent_dates = max_ts > recent_cutoff_ts
-        has_historical_dates = min_ts < recent_cutoff_ts
-
-        # ---------- PHASE 1: Pushshift for historical data ----------
+        # ---------- PullPush (Pushshift mirror) over the full date range ----------
+        # Reddit's self-serve API is gated behind manual approval, so this build runs
+        # PullPush-only: full post data comes straight from the mirror, and comments
+        # come from PullPush's comment endpoint. No Reddit credentials required.
+        # Note: PullPush ingestion currently lags well behind real-time, so very recent
+        # ranges may return little or nothing.
         pushshift_count = 0
-        empty_days, total_days = 0, 0
+        comment_sess = requests.Session()
+        safe_set(job, message="Scraping with PullPush…")
+        logging.info(f"Job {job}: Using PullPush for {start_s} → {end_s}")
 
-        if has_historical_dates and count < CAP:
-            # Use Pushshift for historical portion (before the lag cutoff)
-            ps_max_ts = min(max_ts, recent_cutoff_ts) if has_recent_dates else max_ts
-            safe_set(job, message="Scraping historical data with Pushshift…")
-            logging.info(f"Job {job}: Using Pushshift for historical data (up to {PUSHSHIFT_LAG_DAYS} days ago)")
+        gen = iter_pushshift_ids_daily_anchored(sub, min_ts, max_ts, CAP)
 
-            gen = iter_pushshift_ids_daily_anchored(sub, min_ts, ps_max_ts, CAP - count)
+        for d, cu in gen:
+            sid = d.get("id")
+            if not sid or sid in seen_ids:
+                continue
 
-            for sid, cu in gen:
-                if isinstance(sid, int) and isinstance(cu, int):
-                    empty_days, total_days = sid, cu
+            try:
+                if not post_matches_keywords_dict(d, keyword_list):
                     continue
 
-                if sid in seen_ids:
-                    continue
+                dt = datetime.fromtimestamp(int(cu), tz=timezone.utc)
+                seen_ids.add(sid)
+                if newest_dt_included is None or dt > newest_dt_included:
+                    newest_dt_included = dt
+                if oldest_dt_included is None or dt < oldest_dt_included:
+                    oldest_dt_included = dt
 
-                try:
-                    s = reddit.submission(id=sid)
-                    dt = datetime.fromtimestamp(int(cu), tz=timezone.utc)
+                if include_comments:
+                    comments = fetch_pullpush_comments(comment_sess, sid)
+                    write_pp_submission_with_comments(w, d, dt.isoformat(), comments)
+                    time.sleep(1.0)  # be gentle on the comment endpoint
+                else:
+                    write_pp_submission_row(w, d, dt.isoformat())
 
-                    if not post_matches_keywords(s, keyword_list):
-                        continue
+                count += 1
+                pushshift_count += 1
 
-                    seen_ids.add(sid)
-                    if newest_dt_included is None or dt > newest_dt_included:
-                        newest_dt_included = dt
-                    if oldest_dt_included is None or dt < oldest_dt_included:
-                        oldest_dt_included = dt
+                if count % 10 == 0:
+                    safe_set(job, progress=min(99, int(count / CAP * 100)),
+                             message=f"Scraped {count} posts (PullPush)…")
+                if count >= CAP:
+                    cap_hit = True
+                    break
+            except Exception as e:
+                logging.warning(f"Job {job}: Failed to process submission {sid}: {e}")
 
-                    (write_submission_with_comments if include_comments else write_submission_row)(w, s, dt.isoformat())
-                    count += 1
-                    pushshift_count += 1
-
-                    if count % 10 == 0:
-                        safe_set(job, progress=min(90, int(count / CAP * 100)),
-                                 message=f"Scraped {count} posts (Pushshift: {pushshift_count})…")
-                    if count >= CAP:
-                        cap_hit = True
-                        break
-                except Exception as e:
-                    logging.warning(f"Job {job}: Failed to fetch submission {sid}: {e}")
-
-            # Exhaust generator to get return value
-            if gen and hasattr(gen, 'gi_frame') and gen.gi_frame:
-                try:
-                    while True:
-                        next(gen)
-                except StopIteration as e:
-                    if e.value and isinstance(e.value, tuple) and len(e.value) == 2:
-                        empty_days, total_days = e.value
-
-            if pushshift_count > 0:
-                sources_used.append(f"Pushshift: {pushshift_count}")
-
-        # ---------- PHASE 2: Reddit Native API for recent data ----------
-        reddit_api_count = 0
-
-        if has_recent_dates and count < CAP:
-            # Use Reddit native API for recent portion
-            reddit_min_ts = max(min_ts, recent_cutoff_ts) if has_historical_dates else min_ts
-            safe_set(job, message=f"Scraping recent data with Reddit API (last {PUSHSHIFT_LAG_DAYS} days)…")
-            logging.info(f"Job {job}: Using Reddit native API for recent data")
-
-            for submission, cu in iter_reddit_native_api(reddit, sub, reddit_min_ts, max_ts, CAP - count):
-                if submission.id in seen_ids:
-                    continue
-
-                try:
-                    if not post_matches_keywords(submission, keyword_list):
-                        continue
-
-                    dt = datetime.fromtimestamp(int(cu), tz=timezone.utc)
-                    seen_ids.add(submission.id)
-
-                    if newest_dt_included is None or dt > newest_dt_included:
-                        newest_dt_included = dt
-                    if oldest_dt_included is None or dt < oldest_dt_included:
-                        oldest_dt_included = dt
-
-                    (write_submission_with_comments if include_comments else write_submission_row)(w, submission, dt.isoformat())
-                    count += 1
-                    reddit_api_count += 1
-
-                    if count % 10 == 0:
-                        safe_set(job, progress=min(99, int(count / CAP * 100)),
-                                 message=f"Scraped {count} posts (Reddit API: {reddit_api_count})…")
-                    if count >= CAP:
-                        cap_hit = True
-                        break
-                except Exception as e:
-                    logging.warning(f"Job {job}: Failed to process submission {submission.id}: {e}")
-
-            if reddit_api_count > 0:
-                sources_used.append(f"Reddit API: {reddit_api_count}")
+        sources_used = [f"PullPush: {pushshift_count}"] if pushshift_count > 0 else []
 
         f.flush()
         f.close()
